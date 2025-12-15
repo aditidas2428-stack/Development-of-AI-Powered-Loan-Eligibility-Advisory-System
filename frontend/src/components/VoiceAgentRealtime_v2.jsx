@@ -28,7 +28,7 @@ import { Phone, PhoneOff, X } from "lucide-react";
 import DocumentKYCGrid from "./DocumentKYCGrid";
 import LoanResultCard from "./LoanResultCard";
 import { toast } from "react-toastify";
-
+import { auth } from "../utils/auth";
 
 // Helper Component for Smooth Typing Effect
 const Typewriter = ({ text }) => {
@@ -106,7 +106,6 @@ const VoiceAgentRealtime = () => {
   useEffect(() => {
     extractedDataRef.current = extractedData;
   }, [extractedData]);
-
 
   /**
    * Play next audio chunk from queue
@@ -270,13 +269,14 @@ const VoiceAgentRealtime = () => {
         case "eligibility_result":
           setEligibilityResult(data);
           // Ensure applicationId is always set
-          const appId = data.application_id || readyForVerification?.appId || null;
+          const appId =
+            data.application_id || readyForVerification?.appId || null;
           navigate("/eligibility-result", {
             state: {
               result: data,
               applicationId: appId,
-              extractedData: extractedDataRef.current
-            }
+              extractedData: extractedDataRef.current,
+            },
           });
           break;
 
@@ -292,9 +292,11 @@ const VoiceAgentRealtime = () => {
           if (data.application_id) {
             setReadyForVerification({
               appId: data.application_id,
-              message: "Please click Proceed to verify documents."
+              message: "Please click Proceed to verify documents.",
             });
-            toast.success("Details captured! Click 'Proceed to Verification' to continue.");
+            toast.success(
+              "Details captured! Click 'Proceed to Verification' to continue."
+            );
             // No auto-redirect
           } else {
             setShowDocumentUpload(true);
@@ -323,51 +325,59 @@ const VoiceAgentRealtime = () => {
   /**
    * Initialize WebSocket connection to backend
    */
-  const connectWebSocket = useCallback((onOpenCallback = null) => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.hostname}:8000/api/voice/stream`;
+  const connectWebSocket = useCallback(
+    (onOpenCallback = null) => {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const baseUrl = `${protocol}//${window.location.hostname}:8000`;
 
-    try {
-      if (wsRef.current) {
-        wsRef.current.close();
+      // Attach JWT token as query param so backend can resolve user/email
+      const token = auth.getToken();
+      const query = token ? `?token=${encodeURIComponent(token)}` : "";
+      const wsUrl = `${baseUrl}/api/voice/stream${query}`;
+
+      try {
+        if (wsRef.current) {
+          wsRef.current.close();
+        }
+
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          console.log("WebSocket connected");
+          setIsConnected(true);
+          if (onOpenCallback) onOpenCallback();
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            handleWebSocketMessage(message);
+          } catch (err) {
+            console.error("Failed to parse WebSocket message:", err);
+          }
+        };
+
+        ws.onerror = (err) => {
+          console.error("WebSocket error:", err);
+          console.error("Connection error. Please check backend is running.");
+        };
+
+        ws.onclose = () => {
+          console.log("WebSocket closed");
+          // Only update state if this is still the active socket
+          if (wsRef.current === ws) {
+            setIsConnected(false);
+          }
+        };
+
+        wsRef.current = ws;
+      } catch (err) {
+        console.error("Failed to create WebSocket:", err);
+        toast.error("Failed to connect to voice agent");
       }
-
-      const ws = new WebSocket(wsUrl);
-
-      ws.onopen = () => {
-        console.log("WebSocket connected");
-        setIsConnected(true);
-        if (onOpenCallback) onOpenCallback();
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          handleWebSocketMessage(message);
-        } catch (err) {
-          console.error("Failed to parse WebSocket message:", err);
-        }
-      };
-
-      ws.onerror = (err) => {
-        console.error("WebSocket error:", err);
-        console.error("Connection error. Please check backend is running.");
-      };
-
-      ws.onclose = () => {
-        console.log("WebSocket closed");
-        // Only update state if this is still the active socket
-        if (wsRef.current === ws) {
-          setIsConnected(false);
-        }
-      };
-
-      wsRef.current = ws;
-    } catch (err) {
-      console.error("Failed to create WebSocket:", err);
-      toast.error("Failed to connect to voice agent");
-    }
-  }, [handleWebSocketMessage]);
+    },
+    [handleWebSocketMessage]
+  );
 
   /**
    * START RECORDING (WebM + Gain Boost)
@@ -526,7 +536,7 @@ const VoiceAgentRealtime = () => {
     if (isRecording) {
       stopRecording();
       // DO NOT close connection. Keep it alive for toggling back on.
-      // if (wsRef.current) wsRef.current.close(); 
+      // if (wsRef.current) wsRef.current.close();
     } else {
       // Reuse existing connection if valid
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -550,10 +560,11 @@ const VoiceAgentRealtime = () => {
           <p className="text-xs text-gray-500">AI Loan Assistant</p>
         </div>
         <div
-          className={`px-3 py-1 rounded-full text-xs font-medium ${isConnected
-            ? "bg-green-100 text-green-700"
-            : "bg-red-100 text-red-700"
-            }`}
+          className={`px-3 py-1 rounded-full text-xs font-medium ${
+            isConnected
+              ? "bg-green-100 text-green-700"
+              : "bg-red-100 text-red-700"
+          }`}
         >
           {isConnected ? "Connected" : "Disconnected"}
         </div>
@@ -574,14 +585,16 @@ const VoiceAgentRealtime = () => {
         {finalTranscripts.map((msg, idx) => (
           <div
             key={idx}
-            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"
-              }`}
+            className={`flex ${
+              msg.role === "user" ? "justify-end" : "justify-start"
+            }`}
           >
             <div
-              className={`max-w-[80%] px-4 py-2 rounded-2xl shadow-sm ${msg.role === "user"
-                ? "bg-blue-600 text-white rounded-br-none"
-                : "bg-white text-gray-800 rounded-bl-none border border-gray-100"
-                }`}
+              className={`max-w-[80%] px-4 py-2 rounded-2xl shadow-sm ${
+                msg.role === "user"
+                  ? "bg-blue-600 text-white rounded-br-none"
+                  : "bg-white text-gray-800 rounded-bl-none border border-gray-100"
+              }`}
             >
               <p className="whitespace-pre-wrap text-sm">{msg.text}</p>
             </div>
@@ -632,7 +645,9 @@ const VoiceAgentRealtime = () => {
           {/* Manual Verification Button */}
           {readyForVerification && (
             <button
-              onClick={() => navigate(`/verify?applicationId=${readyForVerification.appId}`)}
+              onClick={() =>
+                navigate(`/verify?applicationId=${readyForVerification.appId}`)
+              }
               className="flex-1 bg-green-600 hover:bg-green-700 text-white py-3 rounded-xl font-semibold shadow-lg animate-pulse"
             >
               Proceed to Verification →
@@ -643,10 +658,11 @@ const VoiceAgentRealtime = () => {
             <input
               type="text"
               placeholder={isRecording ? "Listening..." : "Type a message..."}
-              className={`w-full pl-4 pr-10 py-3 rounded-full border-none focus:ring-2 transition-all shadow-sm text-base text-gray-900 ${isRecording
-                ? "bg-red-50 ring-2 ring-red-100 placeholder-red-400"
-                : "bg-gray-100 focus:bg-white focus:ring-blue-500"
-                }`}
+              className={`w-full pl-4 pr-10 py-3 rounded-full border-none focus:ring-2 transition-all shadow-sm text-base text-gray-900 ${
+                isRecording
+                  ? "bg-red-50 ring-2 ring-red-100 placeholder-red-400"
+                  : "bg-gray-100 focus:bg-white focus:ring-blue-500"
+              }`}
               value={isRecording ? partialTranscript : undefined}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && e.target.value.trim()) {
@@ -687,18 +703,19 @@ const VoiceAgentRealtime = () => {
             style={{
               boxShadow: isRecording
                 ? `0 0 ${10 + volume}px ${Math.max(
-                  2,
-                  volume / 4
-                )}px rgba(239, 68, 68, 0.6)`
+                    2,
+                    volume / 4
+                  )}px rgba(239, 68, 68, 0.6)`
                 : undefined,
               transform: isRecording ? `scale(${1 + volume / 200})` : undefined,
             }}
-            className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-75 shadow-md flex-shrink-0 relative z-10 ${isRecording
-              ? "bg-red-500 text-white"
-              : isConnected
+            className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-75 shadow-md flex-shrink-0 relative z-10 ${
+              isRecording
+                ? "bg-red-500 text-white"
+                : isConnected
                 ? "bg-blue-600 text-white hover:bg-blue-700 shadow-blue-600/30"
                 : "bg-gray-300 text-gray-500 cursor-not-allowed"
-              }`}
+            }`}
             disabled={!isConnected}
           >
             {isRecording ? <PhoneOff size={20} /> : <Phone size={20} />}
@@ -710,7 +727,6 @@ const VoiceAgentRealtime = () => {
       {showDocumentUpload && (
         <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="relative bg-slate-950 rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col border border-slate-800 overflow-hidden">
-
             {/* Close Button (Absolute Top Right) */}
             <button
               onClick={() => setShowDocumentUpload(false)}
@@ -731,14 +747,18 @@ const VoiceAgentRealtime = () => {
                       size: file.size,
                       type: file.type,
                       data: data,
-                      docType: file.docType // store the docType
+                      docType: file.docType, // store the docType
                     },
                   ]);
 
                   // Send to backend
                   if (wsRef.current?.readyState === WebSocket.OPEN) {
                     wsRef.current.send(
-                      JSON.stringify({ type: "document_uploaded", data: data, docType: file.docType })
+                      JSON.stringify({
+                        type: "document_uploaded",
+                        data: data,
+                        docType: file.docType,
+                      })
                     );
                   }
                 }}
@@ -758,7 +778,9 @@ const VoiceAgentRealtime = () => {
               <button
                 onClick={() => {
                   if (uploadedFiles.length < 5) {
-                    toast.warning("Please upload all 5 documents (Aadhaar, PAN, KYC, Bank Statement, Salary Slip) to proceed.");
+                    toast.warning(
+                      "Please upload all 5 documents (Aadhaar, PAN, KYC, Bank Statement, Salary Slip) to proceed."
+                    );
                     return;
                   }
                   setShowDocumentUpload(false);
@@ -768,10 +790,11 @@ const VoiceAgentRealtime = () => {
                     );
                   }
                 }}
-                className={`w-full md:w-auto px-8 py-3 rounded-xl font-semibold shadow-lg transition-all transform active:scale-95 ${uploadedFiles.length < 5
-                  ? "bg-slate-700 text-slate-400 cursor-not-allowed shadow-none"
-                  : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/20"
-                  }`}
+                className={`w-full md:w-auto px-8 py-3 rounded-xl font-semibold shadow-lg transition-all transform active:scale-95 ${
+                  uploadedFiles.length < 5
+                    ? "bg-slate-700 text-slate-400 cursor-not-allowed shadow-none"
+                    : "bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/20"
+                }`}
               >
                 Done / Finish Verification
               </button>

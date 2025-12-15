@@ -35,7 +35,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from dotenv import load_dotenv
 
 # Database
-from app.models.database import get_db, LoanApplication
+from app.models.database import get_db, LoanApplication, User
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -44,6 +44,7 @@ from groq import AsyncGroq
 # We keep DeepgramClient for REST/TTS, but use direct websockets for Streaming STT
 from deepgram import DeepgramClient
 from app.services.ml_model_service import MLModelService 
+from app.utils.security import decode_token
 
 # Try to import optional services
 try:
@@ -171,6 +172,35 @@ async def voice_stream_endpoint(websocket: WebSocket):
     # State
     conversation_history = []
     structured_data = {}
+
+    # Try to resolve the currently logged-in user from JWT token
+    # Token is expected as `?token=...` on the WebSocket URL, but we
+    # also fall back to an Authorization header if present.
+    try:
+        token: Optional[str] = websocket.query_params.get("token")
+        if not token:
+            auth_header = websocket.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header.split(" ", 1)[1].strip()
+
+        if token:
+            token_data = decode_token(token)
+            email = token_data.get("email") if isinstance(token_data, dict) else None
+            if email:
+                db = next(get_db())
+                try:
+                    user = db.query(User).filter(User.email == email).first()
+                    if user:
+                        # Store for downstream logic (DB insert, manager view, emails)
+                        structured_data["user_email"] = user.email
+                        structured_data["user_id"] = user.id
+                finally:
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+    except Exception as auth_err:
+        logger.warning(f"Failed to resolve user from WebSocket token: {auth_err}")
     
     # Direct Direct WebSocket Connection Logic
     deepgram_url = "wss://api.deepgram.com/v1/listen?model=nova-2&language=en-US&smart_format=false&numerals=true&interim_results=true&utterance_end_ms=1000&vad_events=true&endpointing=500"
@@ -509,7 +539,10 @@ async def evaluate_eligibility(data: dict, websocket, ml_service):
                     db = next(get_db())
                     monthly_income_val = float(data.get("monthly_income", 0) or 0.0)
                     loan_amount_val = float(data.get("loan_amount", 0) or 0.0)
+                    user_email = data.get("user_email") or "voice_user@example.com"
+                    user_id = data.get("user_id") or None
                     new_app = LoanApplication(
+                        user_id=int(user_id) if user_id is not None else None,
                         full_name=data.get("name", "Voice User"),
                         monthly_income=monthly_income_val,
                         # Legacy fields used by ManagerDashboard detail view
@@ -524,7 +557,7 @@ async def evaluate_eligibility(data: dict, websocket, ml_service):
                         existing_emi=float(data.get("existing_emi", 0)),
                         marital_status=data.get("marital_status", "Single"),
                         # Defaults
-                        email="voice_user@example.com", 
+                        email=user_email,
                         phone="0000000000",
                         approval_status="pending",
                         document_verified=False,
